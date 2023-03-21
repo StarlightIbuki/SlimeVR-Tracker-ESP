@@ -65,7 +65,7 @@ namespace SlimeVR
 #elif IMU == IMU_BNO055
                     m_Sensor1 = new BNO055Sensor(0, firstIMUAddress, IMU_ROTATION);
 #elif IMU == IMU_MPU9250
-                    m_Sensor1 = new MPU9250Sensor(0, firstIMUAddress, IMU_ROTATION);
+                    m_Sensor1 = new MPU9250Sensor(0, firstIMUAddress, IMU_ROTATION, PIN_IMU_INT);
 #elif IMU == IMU_BMI160
                     m_Sensor1 = new BMI160Sensor(0, firstIMUAddress, IMU_ROTATION);
 #elif IMU == IMU_MPU6500 || IMU == IMU_MPU6050
@@ -106,7 +106,7 @@ namespace SlimeVR
 #elif SECOND_IMU == IMU_BNO055
                     m_Sensor2 = new BNO055Sensor(1, secondIMUAddress, SECOND_IMU_ROTATION);
 #elif SECOND_IMU == IMU_MPU9250
-                    m_Sensor2 = new MPU9250Sensor(1, secondIMUAddress, SECOND_IMU_ROTATION);
+                    m_Sensor2 = new MPU9250Sensor(1, secondIMUAddress, SECOND_IMU_ROTATION,PIN_IMU_INT_2);
 #elif SECOND_IMU == IMU_BMI160
                     m_Sensor2 = new BMI160Sensor(1, secondIMUAddress, SECOND_IMU_ROTATION);
 #elif SECOND_IMU == IMU_MPU6500 || SECOND_IMU == IMU_MPU6050
