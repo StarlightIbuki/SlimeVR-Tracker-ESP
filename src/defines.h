@@ -99,8 +99,8 @@
   #define PIN_IMU_SCL D1
 //6583请在这里改int脚
 //改成"-1"可以禁用
-  #define PIN_IMU_INT D5
-  #define PIN_IMU_INT_2 -1
+  #define PIN_IMU_INT (D5)
+  #define PIN_IMU_INT_2 (-1)
   #define PIN_BATTERY_LEVEL A0
 //  #define LED_PIN 2
 //  #define LED_INVERTED true
