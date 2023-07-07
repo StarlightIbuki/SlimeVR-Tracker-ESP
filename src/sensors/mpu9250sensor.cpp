@@ -29,13 +29,13 @@
 #include "GlobalVars.h"
 // #include "mahony.h"
 // #include "madgwick.h"
-#if not (defined(_MAHONY_H_) || defined(_MADGWICK_H_))
+#if not(defined(_MAHONY_H_) || defined(_MADGWICK_H_))
 #include "dmpmag.h"
 #endif
 
-//#if defined(_MAHONY_H_) || defined(_MADGWICK_H_)
-constexpr float gscale = (250. / 32768.0) * (PI / 180.0); //gyro default 250 LSB per d/s -> rad/s
-//#endif
+// #if defined(_MAHONY_H_) || defined(_MADGWICK_H_)
+constexpr float gscale = (250. / 32768.0) * (PI / 180.0); // gyro default 250 LSB per d/s -> rad/s
+// #endif
 
 #define MAG_CORR_RATIO 0.02
 
@@ -44,23 +44,48 @@ constexpr float gscale = (250. / 32768.0) * (PI / 180.0); //gyro default 250 LSB
 // Accel scale conversion steps: LSB/G -> G -> m/s^2
 constexpr float ASCALE_2G = ((32768. / ACCEL_SENSITIVITY_2G) / 32768.) * CONST_EARTH_GRAVITY;
 
-void MPU9250Sensor::motionSetup() {
-    // initialize device
+// Interrupt support
+// todo 暂时没找到中断传入对象方法的办法，就只能先这样用了
+// todo ArduinoInterrupt requires static method
+volatile bool mpuInterrupt[]{false, false}; // indicates whether MPU interrupt pin has gone high
+IRAM_ATTR void dmpDataReady0()
+{
+    mpuInterrupt[0] = true;
+}
+IRAM_ATTR void dmpDataReady1()
+{
+    mpuInterrupt[1] = true;
+}
+
+void MPU9250Sensor::motionSetup()
+{
     imu.initialize(addr);
-    if(!imu.testConnection()) {
+    if (!imu.testConnection())
+    {
         m_Logger.fatal("Can't connect to MPU9250 (reported device ID 0x%02x) at address 0x%02x", imu.getDeviceID(), addr);
         return;
     }
 
     m_Logger.info("Connected to MPU9250 (reported device ID 0x%02x) at address 0x%02x", imu.getDeviceID(), addr);
 
-    int16_t ax,ay,az;
+    uint8_t magId = imu.getMagnetometerDeviceID();
+    if (magId != 0xFF)
+    {
+        m_Logger.fatal("Can't connect to QMC5883L (reported ID 0x%02x) at address 0x%02x", magId, 0x0D);
+    }
+    else
+    {
+        m_Logger.info("Connected to QMC5883L (reported ID 0x%02x) at address 0x%02x", magId, 0x0D);
+    }
+
+    int16_t ax, ay, az;
 
     // turn on while flip back to calibrate. then, flip again after 5 seconds.
     // TODO: Move calibration invoke after calibrate button on slimeVR server available
     imu.getAcceleration(&ax, &ay, &az);
     float g_az = (float)az / 16384; // For 2G sensitivity
-    if(g_az < -0.75f) {
+    if (g_az < -0.75f)
+    {
         ledManager.on();
         m_Logger.info("Flip front to confirm start calibration");
         delay(5000);
@@ -68,7 +93,8 @@ void MPU9250Sensor::motionSetup() {
 
         imu.getAcceleration(&ax, &ay, &az);
         g_az = (float)az / 16384;
-        if(g_az > 0.75f) {
+        if (g_az > 0.75f)
+        {
             m_Logger.debug("Starting calibration...");
             startCalibration(0);
         }
@@ -78,7 +104,8 @@ void MPU9250Sensor::motionSetup() {
     {
         SlimeVR::Configuration::CalibrationConfig sensorCalibration = configuration.getCalibration(sensorId);
         // If no compatible calibration data is found, the calibration data will just be zero-ed out
-        switch (sensorCalibration.type) {
+        switch (sensorCalibration.type)
+        {
         case SlimeVR::Configuration::CalibrationConfigType::MPU9250:
             m_Calibration = sensorCalibration.data.mpu9250;
             break;
@@ -94,17 +121,45 @@ void MPU9250Sensor::motionSetup() {
         }
     }
 
-#if not (defined(_MAHONY_H_) || defined(_MADGWICK_H_))
+    // enable Arduino interrupt detection
+    if (m_IntPin >= 0)
+    {
+        mpuIntStatus = imu.getIntStatus();
+        m_Logger.info("IntStatus: 0x%02x", mpuIntStatus);
+        if (mpuIntStatus >= 0xd)
+        {
+            pinMode(m_IntPin, INPUT);
+            m_Logger.info("Enabling interrupt detection (Arduino external interrupt GPIO%d)...", m_IntPin);
+            // attachInterrupt没法传入对象方法，就先这样咯
+            if (sensorId == 0)
+            {
+                attachInterrupt(digitalPinToInterrupt(m_IntPin), dmpDataReady0, RISING);
+            }
+            else if (sensorId == 1)
+            {
+                attachInterrupt(digitalPinToInterrupt(m_IntPin), dmpDataReady1, RISING);
+            }
+            else
+            {
+                // todo 还能有更多追踪器?
+                mpuIntStatus = 0;
+            }
+        }
+        else
+        {
+            mpuIntStatus = 0;
+        }
+    }
+
+#if not(defined(_MAHONY_H_) || defined(_MADGWICK_H_))
     uint8_t devStatus = imu.dmpInitialize();
-    if(devStatus == 0){
+    if (devStatus == 0)
+    {
         ledManager.pattern(50, 50, 5);
 
         // turn on the DMP, now that it's ready
         m_Logger.debug("Enabling DMP...");
         imu.setDMPEnabled(true);
-
-        // TODO: Add interrupt support
-        // mpuIntStatus = imu.getIntStatus();
 
         // set our DMP Ready flag so the main loop() function knows it's okay to use it
         m_Logger.debug("DMP ready! Waiting for first interrupt...");
@@ -113,7 +168,9 @@ void MPU9250Sensor::motionSetup() {
         // get expected DMP packet size for later comparison
         packetSize = imu.dmpGetFIFOPacketSize();
         working = true;
-    } else {
+    }
+    else
+    {
         // ERROR!
         // 1 = initial memory load failed
         // 2 = DMP configuration updates failed
@@ -130,7 +187,7 @@ void MPU9250Sensor::motionSetup() {
 
     // TODO: set a rate we prefer instead of getting the current rate from the device.
     deltat = 1.0 / 1000.0 * (1 + imu.getRate());
-    //imu.setRate(blah);
+    // imu.setRate(blah);
 
     imu.resetFIFO();
     imu.setFIFOEnabled(true);
@@ -140,7 +197,8 @@ void MPU9250Sensor::motionSetup() {
 #endif
 }
 
-void MPU9250Sensor::motionLoop() {
+void MPU9250Sensor::motionLoop()
+{
 #if ENABLE_INSPECTION
     {
         int16_t rX, rY, rZ, aX, aY, aZ, mX, mY, mZ;
@@ -152,21 +210,28 @@ void MPU9250Sensor::motionLoop() {
     }
 #endif
 
-#if not (defined(_MAHONY_H_) || defined(_MADGWICK_H_))
+    if (mpuIntStatus && !mpuInterrupt[sensorId])
+        return;
+    mpuInterrupt[sensorId] = false;
+
+#if not(defined(_MAHONY_H_) || defined(_MADGWICK_H_))
     // Update quaternion
-    if(!dmpReady)
+    if (!dmpReady)
         return;
     Quaternion rawQuat{};
     uint8_t dmpPacket[packetSize];
-    if(!imu.GetCurrentFIFOPacket(dmpPacket, packetSize)) return;
-    if(imu.dmpGetQuaternion(&rawQuat, dmpPacket)) return; // FIFO CORRUPTED
-    Quat quat(-rawQuat.y,rawQuat.x,rawQuat.z,rawQuat.w);
+    if (!imu.GetCurrentFIFOPacket(dmpPacket, packetSize))
+        return;
+    if (imu.dmpGetQuaternion(&rawQuat, dmpPacket))
+        return; // FIFO CORRUPTED
+    Quat quat(-rawQuat.y, rawQuat.x, rawQuat.z, rawQuat.w);
 
     int16_t temp[3];
     imu.getMagnetometer(&temp[0], &temp[1], &temp[2]);
     parseMagData(temp);
 
-    if (Mxyz[0] == 0.0f && Mxyz[1] == 0.0f && Mxyz[2] == 0.0f) {
+    if (Mxyz[0] == 0.0f && Mxyz[1] == 0.0f && Mxyz[2] == 0.0f)
+    {
         return;
     }
 
@@ -175,12 +240,16 @@ void MPU9250Sensor::motionLoop() {
 
     float Grav[] = {grav.x, grav.y, grav.z};
 
-    if (correction.length_squared() == 0.0f) {
+    if (correction.length_squared() == 0.0f)
+    {
         correction = getCorrection(Grav, Mxyz, quat);
-    } else {
+    }
+    else
+    {
         Quat newCorr = getCorrection(Grav, Mxyz, quat);
 
-        if(!__isnanf(newCorr.w)) {
+        if (!__isnanf(newCorr.w))
+        {
             correction = correction.slerp(newCorr, MAG_CORR_RATIO);
         }
     }
@@ -211,7 +280,8 @@ void MPU9250Sensor::motionLoop() {
     union fifo_sample_raw buf;
     uint16_t remaining_samples;
     // TODO: would it be faster to read multiple samples at once
-    while (getNextSample (&buf, &remaining_samples)) {
+    while (getNextSample(&buf, &remaining_samples))
+    {
         parseAccelData(buf.sample.accel);
         parseGyroData(buf.sample.gyro);
         parseMagData(buf.sample.mag);
@@ -223,17 +293,23 @@ void MPU9250Sensor::motionLoop() {
         // TODO: monitor remaining_samples to ensure that the number is going down, not up.
         // remaining_samples
 
-        #if defined(_MAHONY_H_)
+#if defined(_MAHONY_H_)
         mahonyQuaternionUpdate(q, Axyz[0], Axyz[1], Axyz[2], Gxyz[0], Gxyz[1], Gxyz[2], Mxyz[0], Mxyz[1], Mxyz[2], deltat * 1.0e-6);
-        #elif defined(_MADGWICK_H_)
+#elif defined(_MADGWICK_H_)
         madgwickQuaternionUpdate(q, Axyz[0], Axyz[1], Axyz[2], Gxyz[0], Gxyz[1], Gxyz[2], Mxyz[0], Mxyz[1], Mxyz[2], deltat * 1.0e-6);
-        #endif
+#endif
     }
-    
+
     quaternion.set(-q[2], q[1], q[3], q[0]);
 
 #endif
     fusedRotation *= sensorOffset;
+
+#if ENABLE_INSPECTION
+    {
+        Network::sendInspectionFusedIMUData(sensorId, quaternion);
+    }
+#endif
 
     if(!lastFusedRotationSent.equalsWithEpsilon(fusedRotation)) {
         newFusedRotation = true;
@@ -241,23 +317,25 @@ void MPU9250Sensor::motionLoop() {
     }
 }
 
-void MPU9250Sensor::startCalibration(int calibrationType) {
+void MPU9250Sensor::startCalibration(int calibrationType)
+{
     ledManager.on();
-#if not (defined(_MAHONY_H_) || defined(_MADGWICK_H_))
+#if not(defined(_MAHONY_H_) || defined(_MADGWICK_H_))
     // with DMP, we just need mag data
     constexpr int calibrationSamples = 300;
 
     // Blink calibrating led before user should rotate the sensor
     m_Logger.info("Gently rotate the device while it's gathering magnetometer data");
-    ledManager.pattern(15, 300, 3000/310);
+    ledManager.pattern(15, 300, 3000 / 310);
     MagnetoCalibration *magneto = new MagnetoCalibration();
-    for (int i = 0; i < calibrationSamples; i++) {
+    for (int i = 0; i < calibrationSamples; i++)
+    {
         ledManager.on();
-        int16_t mx,my,mz;
+        int16_t mx, my, mz;
         imu.getMagnetometer(&mx, &my, &mz);
-        magneto->sample(my, mx, -mz);
+        magneto->sample(mx, my, mz);
 
-        float rawMagFloat[3] = { (float)mx, (float)my, (float)mz};
+        float rawMagFloat[3] = {(float)mx, (float)my, (float)mz};
         Network::sendRawCalibrationData(rawMagFloat, CALIBRATION_TYPE_EXTERNAL_MAG, 0);
         ledManager.off();
         delay(250);
@@ -270,7 +348,8 @@ void MPU9250Sensor::startCalibration(int calibrationType) {
 
     m_Logger.debug("[INFO] Magnetometer calibration matrix:");
     m_Logger.debug("{");
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 3; i++)
+    {
         m_Calibration.M_B[i] = M_BAinv[0][i];
         m_Calibration.M_Ainv[0][i] = M_BAinv[1][i];
         m_Calibration.M_Ainv[1][i] = M_BAinv[2][i];
@@ -293,11 +372,15 @@ void MPU9250Sensor::startCalibration(int calibrationType) {
     delay(2000);
 
     union fifo_sample_raw buf;
-    
+
     imu.resetFIFO(); // fifo is sure to have filled up in the seconds of delay, don't try reading it.
-    for (int i = 0; i < calibrationSamples; i++) {
+    for (int i = 0; i < calibrationSamples; i++)
+    {
         // wait for new sample
-        while (!getNextSample(&buf, nullptr)) { ; }
+        while (!getNextSample(&buf, nullptr))
+        {
+            ;
+        }
 
         Gxyz[0] += float(buf.sample.gyro[0]);
         Gxyz[1] += float(buf.sample.gyro[1]);
@@ -319,15 +402,16 @@ void MPU9250Sensor::startCalibration(int calibrationType) {
 
     // Blink calibrating led before user should rotate the sensor
     m_Logger.info("Gently rotate the device while it's gathering accelerometer and magnetometer data");
-    ledManager.pattern(15, 300, 3000/310);
+    ledManager.pattern(15, 300, 3000 / 310);
 
     MagnetoCalibration *magneto_acc = new MagnetoCalibration();
     MagnetoCalibration *magneto_mag = new MagnetoCalibration();
 
     // NOTE: we don't use the FIFO here on *purpose*. This makes the difference between a calibration that takes a second or three and a calibration that takes much longer.
-    for (int i = 0; i < calibrationSamples; i++) {
+    for (int i = 0; i < calibrationSamples; i++)
+    {
         ledManager.on();
-        int16_t ax,ay,az,gx,gy,gz,mx,my,mz;
+        int16_t ax, ay, az, gx, gy, gz, mx, my, mz;
         imu.getMotion9(&ax, &ay, &az, &gx, &gy, &gz, &mx, &my, &mz);
         magneto_acc->sample(ax, ay, az);
         magneto_mag->sample(my, mx, -mz);
@@ -335,12 +419,12 @@ void MPU9250Sensor::startCalibration(int calibrationType) {
         // Thought: since we're sending the samples to the server anyway,
         // we could make the server run magneto for us.
         // TODO: consider moving the sample reporting into magneto itself?
-        float rawAccFloat[3] = { (float)ax, (float)ay, (float)az };
+        float rawAccFloat[3] = {(float)ax, (float)ay, (float)az};
         Network::sendRawCalibrationData(rawAccFloat, CALIBRATION_TYPE_EXTERNAL_ACCEL, 0);
 
-        float rawMagFloat[3] = { (float)mx, (float)my, (float)-mz };
+        float rawMagFloat[3] = {(float)mx, (float)my, (float)-mz};
         Network::sendRawCalibrationData(rawMagFloat, CALIBRATION_TYPE_EXTERNAL_MAG, 0);
-   
+
         ledManager.off();
         delay(250);
     }
@@ -368,7 +452,8 @@ void MPU9250Sensor::startCalibration(int calibrationType) {
     m_Logger.debug("}");
     m_Logger.debug("[INFO] Magnetometer calibration matrix:");
     m_Logger.debug("{");
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 3; i++)
+    {
         m_Calibration.M_B[i] = M_BAinv[0][i];
         m_Calibration.M_Ainv[0][i] = M_BAinv[1][i];
         m_Calibration.M_Ainv[1][i] = M_BAinv[2][i];
@@ -395,26 +480,29 @@ void MPU9250Sensor::startCalibration(int calibrationType) {
     imu.resetFIFO();
 }
 
-void MPU9250Sensor::parseMagData(int16_t data[3]) {
+void MPU9250Sensor::parseMagData(int16_t data[3])
+{
     // reading *little* endian int16
-    Mxyz[0] = (float)data[1]; // my
-    Mxyz[1] = (float)data[0]; // mx
-    Mxyz[2] = -(float)data[2]; // mz
+    Mxyz[0] = (float)data[0]; // mx
+    Mxyz[1] = (float)data[1]; // my
+    Mxyz[2] = (float)data[2]; // mz
 
     float temp[3];
 
-    //apply offsets and scale factors from Magneto
-    for (unsigned i = 0; i < 3; i++) {
+    // apply offsets and scale factors from Magneto
+    for (unsigned i = 0; i < 3; i++)
+    {
         temp[i] = (Mxyz[i] - m_Calibration.M_B[i]);
-        #if useFullCalibrationMatrix == true
-            Mxyz[i] = m_Calibration.M_Ainv[i][0] * temp[0] + m_Calibration.M_Ainv[i][1] * temp[1] + m_Calibration.M_Ainv[i][2] * temp[2];
-        #else
-            Mxyz[i] = temp[i];
-        #endif
+#if useFullCalibrationMatrix == true
+        Mxyz[i] = m_Calibration.M_Ainv[i][0] * temp[0] + m_Calibration.M_Ainv[i][1] * temp[1] + m_Calibration.M_Ainv[i][2] * temp[2];
+#else
+        Mxyz[i] = temp[i];
+#endif
     }
 }
 
-void MPU9250Sensor::parseAccelData(int16_t data[3]) {
+void MPU9250Sensor::parseAccelData(int16_t data[3])
+{
     // reading big endian int16
     Axyz[0] = (float)data[0];
     Axyz[1] = (float)data[1];
@@ -422,44 +510,49 @@ void MPU9250Sensor::parseAccelData(int16_t data[3]) {
 
     float temp[3];
 
-    //apply offsets (bias) and scale factors from Magneto
-    for (unsigned i = 0; i < 3; i++) {
+    // apply offsets (bias) and scale factors from Magneto
+    for (unsigned i = 0; i < 3; i++)
+    {
         temp[i] = (Axyz[i] - m_Calibration.A_B[i]);
-        #if useFullCalibrationMatrix == true
-            Axyz[i] = m_Calibration.A_Ainv[i][0] * temp[0] + m_Calibration.A_Ainv[i][1] * temp[1] + m_Calibration.A_Ainv[i][2] * temp[2];
-        #else
-            Axyz[i] = temp[i];
-        #endif
+#if useFullCalibrationMatrix == true
+        Axyz[i] = m_Calibration.A_Ainv[i][0] * temp[0] + m_Calibration.A_Ainv[i][1] * temp[1] + m_Calibration.A_Ainv[i][2] * temp[2];
+#else
+        Axyz[i] = temp[i];
+#endif
     }
 }
 
 // TODO: refactor so that calibration/conversion to float is only done in one place.
-void MPU9250Sensor::parseGyroData(int16_t data[3]) {
+void MPU9250Sensor::parseGyroData(int16_t data[3])
+{
     // reading big endian int16
-    Gxyz[0] = ((float)data[0] - m_Calibration.G_off[0]) * gscale; //250 LSB(d/s) default to radians/s
+    Gxyz[0] = ((float)data[0] - m_Calibration.G_off[0]) * gscale; // 250 LSB(d/s) default to radians/s
     Gxyz[1] = ((float)data[1] - m_Calibration.G_off[1]) * gscale;
     Gxyz[2] = ((float)data[2] - m_Calibration.G_off[2]) * gscale;
 }
 
 // really just an implementation detail of getNextSample...
-void MPU9250Sensor::swapFifoData(union fifo_sample_raw* sample) {
-    #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-        // byteswap the big endian integers
-        for (unsigned iii = 0; iii < 12; iii += 2) {
-            uint8_t tmp = sample->raw[iii + 0];
-            sample->raw[iii + 0] = sample->raw[iii + 1];
-            sample->raw[iii + 1] = tmp;
-        }
-    #elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-        // byteswap the little endian integers
-        for (unsigned iii = 12; iii < 18; iii += 2) {
-            uint8_t tmp = sample->raw[iii + 0];
-            sample->raw[iii + 0] = sample->raw[iii + 1];
-            sample->raw[iii + 1] = tmp;
-        }
-    #else
-        #error "Endian isn't Little endian or big endian, are we not using GCC or is this a PDP?"
-    #endif
+void MPU9250Sensor::swapFifoData(union fifo_sample_raw *sample)
+{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    // byteswap the big endian integers
+    for (unsigned iii = 0; iii < 12; iii += 2)
+    {
+        uint8_t tmp = sample->raw[iii + 0];
+        sample->raw[iii + 0] = sample->raw[iii + 1];
+        sample->raw[iii + 1] = tmp;
+    }
+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    // byteswap the little endian integers
+    for (unsigned iii = 12; iii < 18; iii += 2)
+    {
+        uint8_t tmp = sample->raw[iii + 0];
+        sample->raw[iii + 0] = sample->raw[iii + 1];
+        sample->raw[iii + 1] = tmp;
+    }
+#else
+#error "Endian isn't Little endian or big endian, are we not using GCC or is this a PDP?"
+#endif
 
     // compiler hint for the union, should be optimized away for optimization >= -O1 according to compiler explorer
     memmove(&sample->sample, sample->raw, sensor_data_len);
@@ -473,15 +566,18 @@ void MPU9250Sensor::swapFifoData(union fifo_sample_raw* sample) {
 // we could read into a properly aligned array of fifo_samples (and not require a memcpy?)
 // TODO: strict aliasing might not be violated if we just read directly into a fifo_sample*.
 //  which means the union approach may be overcomplicated. *shrug*
-bool MPU9250Sensor::getNextSample(union fifo_sample_raw *buffer, uint16_t *remaining_count) {
+bool MPU9250Sensor::getNextSample(union fifo_sample_raw *buffer, uint16_t *remaining_count)
+{
     uint16_t count = imu.getFIFOCount();
-    if (count < sensor_data_len) {
+    if (count < sensor_data_len)
+    {
         // no samples to read
         remaining_count = 0;
         return false;
     }
 
-    if (remaining_count) {
+    if (remaining_count)
+    {
         *remaining_count = (count / sensor_data_len) - 1;
     }
 

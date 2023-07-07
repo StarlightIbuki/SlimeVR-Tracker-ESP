@@ -32,7 +32,7 @@
 class MPU9250Sensor : public Sensor
 {
 public:
-    MPU9250Sensor(uint8_t id, uint8_t address, float rotation) : Sensor("MPU9250Sensor", IMU_MPU9250, id, address, rotation){};
+    MPU9250Sensor(uint8_t id, uint8_t address, float rotation, uint8_t intPin = -1) : Sensor("MPU9250Sensor", IMU_MPU9250, id, address, rotation), m_IntPin(intPin){};
     ~MPU9250Sensor(){};
     void motionSetup() override final;
     void motionLoop() override final;
@@ -41,10 +41,10 @@ public:
 
 private:
     MPU9250 imu{};
-    bool dmpReady = false;    // set true if DMP init was successful
+    bool dmpReady = false; // set true if DMP init was successful
     // TODO: actually check interrupt status
     // uint8_t mpuIntStatus;     // holds actual interrupt status byte from MPU
-    uint16_t packetSize;      // expected DMP packet size (default is 42 bytes)
+    uint16_t packetSize; // expected DMP packet size (default is 42 bytes)
 
     // raw data and scaled as vector
     float q[4]{1.0f, 0.0f, 0.0f, 0.0f}; // for raw filter
@@ -54,7 +54,7 @@ private:
     VectorInt16 rawAccel{};
     Quat correction{0, 0, 0, 0};
     // Loop timing globals
-    float deltat = 0;                // sample time in seconds
+    float deltat = 0; // sample time in seconds
 
     SlimeVR::Configuration::MPU9250CalibrationConfig m_Calibration;
 
@@ -62,11 +62,16 @@ private:
     void parseAccelData(int16_t data[3]);
     void parseGyroData(int16_t data[3]);
     void parseMagData(int16_t data[3]);
+    
+    // 中断适配
+    uint8_t m_IntPin;
+    uint8_t mpuIntStatus;
 
     // 6 bytes for gyro, 6 bytes for accel, 7 bytes for magnetometer
     static constexpr uint16_t sensor_data_len = 19;
 
-    struct fifo_sample {
+    struct fifo_sample
+    {
         int16_t accel[3];
         int16_t gyro[3];
         int16_t mag[3];
@@ -75,14 +80,15 @@ private:
 
     // acts as a memory space for getNextSample. upon success, can read from the sample member
     // TODO: this may be overcomplicated, we may be able to just use fifo_sample and i misunderstood strict aliasing rules.
-    union fifo_sample_raw {
+    union fifo_sample_raw
+    {
         uint8_t raw[sensor_data_len];
         struct fifo_sample sample;
     };
 
     // returns true if sample was read, outputs number of waiting samples in remaining_count if not null.
     bool getNextSample(union fifo_sample_raw *buffer, uint16_t *remaining_count);
-    static void swapFifoData(union fifo_sample_raw* sample);
+    static void swapFifoData(union fifo_sample_raw *sample);
 };
 
 #endif
